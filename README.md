@@ -8,19 +8,19 @@ transactions, and provides a FastAPI router — all backed by PostgreSQL.
 ## Install from GitHub
 
 ```bash
-pip install git+https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine.git
+pip install git+https://github.com/arshiyaazim/fazle-payroll-engine.git
 ```
 
 To install a specific version/tag:
 ```bash
-pip install git+https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine.git@v1.0.0
+pip install git+https://github.com/arshiyaazim/fazle-payroll-engine.git@v1.0.0
 ```
 
 To install into an existing venv (e.g. fazle-core):
 ```bash
 cd /home/azim/core
 source venv/bin/activate
-pip install git+https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine.git
+pip install git+https://github.com/arshiyaazim/fazle-payroll-engine.git
 ```
 
 ## Usage within fazle-core
@@ -46,13 +46,13 @@ async def lifespan(app):
 ## Update the installed package
 
 ```bash
-pip install --upgrade git+https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine.git
+pip install --upgrade git+https://github.com/arshiyaazim/fazle-payroll-engine.git
 ```
 
 ## Development (editable install)
 
 ```bash
-git clone https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine.git
+git clone https://github.com/arshiyaazim/fazle-payroll-engine.git
 cd fazle-payroll-engine
 pip install -e .
 ```

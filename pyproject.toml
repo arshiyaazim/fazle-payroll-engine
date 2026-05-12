@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine"
+Repository = "https://github.com/arshiyaazim/fazle-payroll-engine"
 
 [tool.setuptools.packages.find]
 where = ["."]
