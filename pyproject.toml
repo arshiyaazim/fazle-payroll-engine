@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "fazle-payroll-engine"
+version = "1.0.0"
+description = "Fazle Payroll Engine — WhatsApp-based payroll processing module for fazle-core"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Fazle Security", email = "admin@fazle.iamazim.com" },
+]
+dependencies = [
+    "fastapi>=0.115",
+    "asyncpg>=0.30",
+    "httpx>=0.28",
+    "rapidfuzz>=3.10",
+    "pydantic-settings>=2.6",
+    "python-dotenv>=1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/YOUR_GITHUB_USERNAME/fazle-payroll-engine"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["fazle_payroll_engine*"]
+
+[tool.setuptools.package-data]
+fazle_payroll_engine = ["migrations/*.sql"]
