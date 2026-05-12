@@ -70,6 +70,23 @@ _RE_NAME_BEFORE_PHONE = re.compile(
 
 _BENGALI_DIGITS_TRANS = str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789")
 
+# ── Cash / Income command patterns ────────────────────────────────────────────
+
+# Matches: "Cash 01XXXXXXXXX ..." or "Income 01XXXXXXXXX ..."
+_RE_CASH_CMD   = re.compile(r"^[Cc]ash\s+", re.MULTILINE)
+_RE_INCOME_CMD = re.compile(r"^[Ii]ncome\s+", re.MULTILINE)
+
+# Flexible amount at end of Cash/Income command:
+#   5000 | 5000/ | 5000/- | 5,000.00 | -5000 | =5,000.00 | 5000.00/-
+# Captures only the numeric part; sign/punctuation is stripped later.
+_RE_CMD_AMOUNT = re.compile(
+    r"""(?:[-=+]\s*)?          # optional leading sign or =
+        ([0-9][0-9,\.]*?)      # the number (lazy)
+        \s*[-/]{0,2}\s*$       # optional trailing /- or / or -
+    """,
+    re.VERBOSE,
+)
+
 PARSER_VERSION = "v1"
 
 
@@ -85,6 +102,14 @@ def parse_message(text: Optional[str], msg_date: Optional[date] = None) -> Parse
 
     t = text.strip()
 
+    # ── Cash command: "Cash 01XXXXXXXXX Name Amount" ───────────────────────────
+    if _RE_CASH_CMD.match(t):
+        return _parse_cash_or_income_command(t, msg_date, MessageType.cash_command)
+
+    # ── Income command: "Income 01XXXXXXXXX Name Amount" ──────────────────────
+    if _RE_INCOME_CMD.match(t):
+        return _parse_cash_or_income_command(t, msg_date, MessageType.income_command)
+
     # ── Balance summary detection (check first — short-circuits) ──────────────
     if _is_balance_summary(t):
         return _parse_balance_summary(t)
@@ -95,6 +120,70 @@ def parse_message(text: Optional[str], msg_date: Optional[date] = None) -> Parse
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _parse_cash_or_income_command(text: str, msg_date: Optional[date], mtype: MessageType) -> ParseResult:
+    """
+    Parse a command-style message:
+        Cash   01XXXXXXXXX Employee Name Amount
+        Income 01XXXXXXXXX Employee Name Amount
+
+    Token structure (space-separated, first line only):
+        tokens[0]  = "Cash" / "Income"  (already confirmed by caller)
+        tokens[1]  = phone number
+        tokens[-1] = amount (with optional trailing /-)
+        tokens[2:-1] = employee name words (may be empty for unnamed income)
+
+    Returns ParseResult with message_type = mtype.
+    Uses message_type=MessageType.other on unrecoverable parse failure.
+    """
+    # Use only the first non-empty line (commands are always single-line)
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), text)
+
+    tokens = first_line.split()
+    # Need at least: keyword + phone + amount  (3 tokens)
+    if len(tokens) < 3:
+        return ParseResult(message_type=MessageType.other, confidence=1.0)
+
+    # tokens[0] is the keyword; skip it
+    phone_raw = tokens[1]
+    amount_raw = tokens[-1]
+    name_tokens = tokens[2:-1]  # may be empty list
+
+    # ── Phone ─────────────────────────────────────────────────────────────────
+    phone = normalize_bd_phone(phone_raw)
+    if phone is None:
+        return ParseResult(message_type=MessageType.other, confidence=1.0)
+
+    # ── Amount ────────────────────────────────────────────────────────────────
+    m_amt = _RE_CMD_AMOUNT.search(amount_raw)
+    if not m_amt:
+        return ParseResult(message_type=MessageType.other, confidence=1.0)
+    amount = normalize_amount(m_amt.group(1))
+    if amount is None or amount <= 0:
+        return ParseResult(message_type=MessageType.other, confidence=1.0)
+
+    # ── Name ──────────────────────────────────────────────────────────────────
+    name_raw: Optional[str] = " ".join(name_tokens).strip() if name_tokens else None
+    if name_raw and not _is_valid_human_name(name_raw):
+        name_raw = None
+
+    p = ParsedPayment(
+        raw_text=text,
+        payout_phone=phone,
+        employee_id_phone=phone,         # same phone doubles as employee ID
+        employee_name_raw=name_raw,
+        payout_method=PayoutMethod.cash,  # Cash/Income commands are always cash
+        amount=Decimal(str(amount)),
+        txn_date=msg_date,
+        confidence=1.0,
+    )
+
+    return ParseResult(
+        message_type=mtype,
+        payment=p,
+        confidence=1.0,
+    )
+
 
 def _is_balance_summary(text: str) -> bool:
     """Heuristic: contains Bengali accounting keywords."""

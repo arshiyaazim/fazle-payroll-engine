@@ -26,6 +26,8 @@ class PayoutMethod(str, Enum):
 class MessageType(str, Enum):
     payment         = "payment"
     balance_summary = "balance_summary"
+    cash_command    = "cash_command"    # "Cash <phone> <name> <amount>" from authorized sender
+    income_command  = "income_command"  # "Income <phone> <name> <amount>" from authorized sender
     other           = "other"
 
 
@@ -45,6 +47,7 @@ class TxnCategory(str, Enum):
     bonus      = "bonus"
     deduction  = "deduction"
     correction = "correction"
+    income     = "income"      # company income received from a client, linked to an employee
 
 
 # ── Parser output ─────────────────────────────────────────────────────────────

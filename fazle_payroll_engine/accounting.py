@@ -273,3 +273,66 @@ def _row_to_model(row: dict) -> TransactionRow:
         is_reversal=row.get("is_reversal", False),
         created_at=row["created_at"],
     )
+
+
+# ── Income transaction creation ───────────────────────────────────────────────
+
+async def create_income_transaction(
+    fpe_wa_message_id: Optional[int],
+    employee_id: Optional[int],
+    employee_name_raw: Optional[str],
+    amount: Decimal,
+    txn_date: date,
+    reported_by_phone: Optional[str] = None,
+    source_message_text: Optional[str] = None,
+) -> int:
+    """
+    Insert one income transaction into fpe_income_transactions.
+    Does NOT touch fpe_employee_ledger or fpe_cash_transactions.
+
+    Idempotency: sha256(wa_message_id | employee_id | amount | period).
+    Returns the new (or existing) row id.
+    """
+    period = _period_from_date(txn_date)
+    key = "|".join([
+        str(fpe_wa_message_id or ""),
+        str(employee_id or ""),
+        str(amount),
+        period,
+    ])
+    txn_ref = "inc-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+    existing_id = await fetch_val(
+        "SELECT id FROM fpe_income_transactions WHERE txn_ref = $1",
+        txn_ref,
+    )
+    if existing_id:
+        log.info("[fpe.acct] income idempotent hit txn_ref=%s", txn_ref)
+        return existing_id
+
+    async with db_conn() as conn:
+        new_id: int = await conn.fetchval(
+            """
+            INSERT INTO fpe_income_transactions
+                (txn_ref, fpe_wa_message_id, employee_id, employee_name_raw,
+                 amount, txn_date, accounting_period,
+                 reported_by_phone, source_message_text)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            RETURNING id
+            """,
+            txn_ref,
+            fpe_wa_message_id,
+            employee_id,
+            employee_name_raw,
+            amount,
+            txn_date,
+            period,
+            reported_by_phone,
+            source_message_text,
+        )
+
+    log.info(
+        "[fpe.acct] income txn id=%d ref=%s emp=%s amount=%s",
+        new_id, txn_ref[:12], employee_id, amount,
+    )
+    return new_id

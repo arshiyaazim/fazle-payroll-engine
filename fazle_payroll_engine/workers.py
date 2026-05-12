@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import Optional
 
 from app.database import fetch_all, fetch_one
-from .accounting import create_transaction
+from .accounting import create_income_transaction, create_transaction
 from .ai_enhancer import ai_enhance_parse
 from .employee import match_or_create_employee
 from .gap_scan import gap_scan_loop
@@ -95,7 +95,8 @@ async def _process_pending_batch() -> None:
     rows = await fetch_all(
         """
         SELECT mps.id AS mps_id, mps.fpe_wa_message_id, mps.attempts,
-               m.raw_content, m.is_from_me, m.timestamp_wa, m.source, m.chat_jid
+               m.raw_content, m.is_from_me, m.timestamp_wa, m.source, m.chat_jid,
+               m.sender_phone
         FROM fpe_message_processing_state mps
         JOIN fpe_wa_messages m ON m.id = mps.fpe_wa_message_id
         WHERE mps.status = 'pending'
@@ -169,6 +170,26 @@ async def _process_pending_batch() -> None:
             # Transition to 'parsed' or 'skipped'
             if result.message_type == MessageType.payment:
                 next_status = "parsed"
+            elif result.message_type in (MessageType.cash_command, MessageType.income_command):
+                # Sender authorization check
+                from app.config import get_settings as _get_settings
+                _settings = _get_settings()
+                sender_raw = row.get("sender_phone") or ""
+                sender_norm = normalize_bd_phone(sender_raw) or sender_raw
+                if result.message_type == MessageType.cash_command:
+                    authorized = sender_norm in _settings.fpe_cash_authorized_phone_list
+                else:
+                    authorized = sender_norm in _settings.fpe_income_authorized_phone_list
+
+                if not authorized:
+                    log.info(
+                        "[fpe.worker.parser] unauthorized %s sender=%s msg=%d",
+                        result.message_type.value, sender_norm, msg_id,
+                    )
+                    await mark_processing_status(msg_id, "skipped")
+                    continue
+
+                next_status = "parsed"
             else:
                 next_status = "skipped"
                 # Surface non-payment messages in the review queue so an admin
@@ -241,13 +262,12 @@ async def _process_parsed_batch() -> None:
         """
         SELECT mps.fpe_wa_message_id,
                pr.message_type, pr.parsed_data, pr.confidence,
-               m.raw_content, m.is_from_me, m.source
+               m.raw_content, m.is_from_me, m.source, m.chat_jid, m.sender_phone
         FROM fpe_message_processing_state mps
         JOIN fpe_parser_results pr ON pr.fpe_wa_message_id = mps.fpe_wa_message_id
         JOIN fpe_wa_messages m ON m.id = mps.fpe_wa_message_id
         WHERE mps.status = 'parsed'
-          AND pr.message_type = 'payment'
-          AND m.is_from_me = TRUE
+          AND pr.message_type IN ('payment', 'cash_command', 'income_command')
           AND mps.attempts < $1
         ORDER BY mps.queued_at ASC
         LIMIT $2
@@ -297,6 +317,93 @@ async def _process_parsed_batch() -> None:
                 continue
 
             txn_date = datetime.fromisoformat(txn_date_str).date() if txn_date_str else datetime.utcnow().date()
+
+            msg_type = row["message_type"]
+
+            # ── Cash command: employee MUST exist (strict lookup, reply on error) ──
+            if msg_type == "cash_command":
+                from app.database import fetch_one as _fetch_one
+                from app.bridge import get_bridge1, get_bridge2
+
+                emp_phone = payout_phone or id_phone
+                emp_row = None
+                if emp_phone:
+                    emp_row = await _fetch_one(
+                        "SELECT id FROM fpe_employees "
+                        "WHERE primary_phone = $1 OR employee_id_phone = $1 "
+                        "LIMIT 1",
+                        emp_phone,
+                    )
+
+                if not emp_row:
+                    # Employee not found — send WhatsApp error reply
+                    reply = (
+                        f"❌ Cash command failed: employee not found for "
+                        f"'{emp_phone or name_raw}'.\n"
+                        f"Please create the employee first, then retry."
+                    )
+                    try:
+                        bridge = get_bridge1() if row["source"] == "bridge1" else get_bridge2()
+                        await bridge.send(row["chat_jid"], reply)
+                    except Exception as br_exc:
+                        log.warning("[fpe.worker.acct] bridge reply failed: %s", br_exc)
+                    await store_unmatched(
+                        msg_id, "cash_command_no_employee", row["raw_content"],
+                        detected_amount=amount,
+                        detected_payout_phone=emp_phone,
+                        detected_employee_name=name_raw,
+                        parser_confidence=confidence,
+                    )
+                    await mark_processing_status(msg_id, "skipped")
+                    continue
+
+                # Employee found — create salary transaction
+                req = TransactionCreateRequest(
+                    fpe_wa_message_id=msg_id,
+                    employee_id=emp_row["id"],
+                    employee_name_raw=name_raw,
+                    amount=amount,
+                    payout_phone=emp_phone,
+                    payout_method=PayoutMethod.cash,
+                    txn_date=txn_date,
+                    txn_category=TxnCategory.salary,
+                    source_message_text=row["raw_content"],
+                    created_by=normalize_bd_phone(row.get("sender_phone")) or "system",
+                )
+                txn = await create_transaction(req)
+                await mark_processing_status(msg_id, "done")
+                log.info(
+                    "[fpe.worker.acct] cash_cmd done msg=%d emp=%d txn=%s amount=%s",
+                    msg_id, emp_row["id"], txn.txn_ref[:12], amount,
+                )
+                continue
+
+            # ── Income command: auto-create employee, write income table ──────
+            if msg_type == "income_command":
+                emp_phone = payout_phone or id_phone
+                emp = await match_or_create_employee(name_raw, emp_phone, emp_phone)
+                emp_id = emp.employee_id if emp else None
+
+                await create_income_transaction(
+                    fpe_wa_message_id=msg_id,
+                    employee_id=emp_id,
+                    employee_name_raw=name_raw,
+                    amount=amount,
+                    txn_date=txn_date,
+                    reported_by_phone=normalize_bd_phone(row.get("sender_phone")),
+                    source_message_text=row["raw_content"],
+                )
+                await mark_processing_status(msg_id, "done")
+                log.info(
+                    "[fpe.worker.acct] income_cmd done msg=%d emp=%s amount=%s",
+                    msg_id, emp_id, amount,
+                )
+                continue
+
+            # ── Standard payment (is_from_me required) ────────────────────────
+            if not row["is_from_me"]:
+                await mark_processing_status(msg_id, "skipped")
+                continue
 
             # Employee matching / auto-create
             emp = await match_or_create_employee(name_raw, payout_phone, id_phone)
