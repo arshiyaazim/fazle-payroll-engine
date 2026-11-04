@@ -16,7 +16,7 @@ from typing import Optional
 import httpx
 
 from app.config import get_settings
-from app.ollama import _ollama_sem  # reuse the existing semaphore
+from app.ollama import get_ollama_sem  # reuse the existing semaphore
 
 log = logging.getLogger("fazle.fpe.ai")
 
@@ -60,7 +60,7 @@ async def ai_enhance_parse(
     prompt = _CLASSIFY_PROMPT.format(message=message_text[:500])
 
     try:
-        async with _ollama_sem:
+        async with get_ollama_sem():
             async with httpx.AsyncClient(timeout=AI_TIMEOUT_S) as client:
                 resp = await client.post(
                     f"{settings.ollama_url}/api/generate",
